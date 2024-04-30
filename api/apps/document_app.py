@@ -23,8 +23,11 @@ import flask
 from elasticsearch_dsl import Q
 from flask import request
 from flask_login import login_required, current_user
+
+from api.db.services.file2document_service import File2DocumentService
+from api.db.services.file_service import FileService
 from rag.nlp import search
-from rag.utils import ELASTICSEARCH
+from rag.utils.es_conn import ELASTICSEARCH
 from api.db.services import duplicate_name
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.utils.api_utils import server_error_response, get_data_error_result, validate_request
@@ -48,55 +51,59 @@ def upload():
     if 'file' not in request.files:
         return get_json_result(
             data=False, retmsg='No file part!', retcode=RetCode.ARGUMENT_ERROR)
-    file = request.files['file']
-    if file.filename == '':
+
+    file_objs = request.files.getlist('file')
+    for file_obj in file_objs:
+        if file_obj.filename == '':
+            return get_json_result(
+                data=False, retmsg='No file selected!', retcode=RetCode.ARGUMENT_ERROR)
+
+    err = []
+    for file in file_objs:
+        try:
+            e, kb = KnowledgebaseService.get_by_id(kb_id)
+            if not e:
+                raise LookupError("Can't find this knowledgebase!")
+            MAX_FILE_NUM_PER_USER = int(os.environ.get('MAX_FILE_NUM_PER_USER', 0))
+            if MAX_FILE_NUM_PER_USER > 0 and DocumentService.get_doc_count(kb.tenant_id) >= MAX_FILE_NUM_PER_USER:
+                raise RuntimeError("Exceed the maximum file number of a free user!")
+
+            filename = duplicate_name(
+                DocumentService.query,
+                name=file.filename,
+                kb_id=kb.id)
+            filetype = filename_type(filename)
+            if filetype == FileType.OTHER.value:
+                raise RuntimeError("This type of file has not been supported yet!")
+
+            location = filename
+            while MINIO.obj_exist(kb_id, location):
+                location += "_"
+            blob = file.read()
+            MINIO.put(kb_id, location, blob)
+            doc = {
+                "id": get_uuid(),
+                "kb_id": kb.id,
+                "parser_id": kb.parser_id,
+                "parser_config": kb.parser_config,
+                "created_by": current_user.id,
+                "type": filetype,
+                "name": filename,
+                "location": location,
+                "size": len(blob),
+                "thumbnail": thumbnail(filename, blob)
+            }
+            if doc["type"] == FileType.VISUAL:
+                doc["parser_id"] = ParserType.PICTURE.value
+            if re.search(r"\.(ppt|pptx|pages)$", filename):
+                doc["parser_id"] = ParserType.PRESENTATION.value
+            DocumentService.insert(doc)
+        except Exception as e:
+            err.append(file.filename + ": " + str(e))
+    if err:
         return get_json_result(
-            data=False, retmsg='No file selected!', retcode=RetCode.ARGUMENT_ERROR)
-
-    try:
-        e, kb = KnowledgebaseService.get_by_id(kb_id)
-        if not e:
-            return get_data_error_result(
-                retmsg="Can't find this knowledgebase!")
-        MAX_FILE_NUM_PER_USER = int(os.environ.get('MAX_FILE_NUM_PER_USER', 0))
-        if MAX_FILE_NUM_PER_USER > 0 and DocumentService.get_doc_count(kb.tenant_id) >= MAX_FILE_NUM_PER_USER:
-            return get_data_error_result(
-                retmsg="Exceed the maximum file number of a free user!")
-
-        filename = duplicate_name(
-            DocumentService.query,
-            name=file.filename,
-            kb_id=kb.id)
-        filetype = filename_type(filename)
-        if not filetype:
-            return get_data_error_result(
-                retmsg="This type of file has not been supported yet!")
-
-        location = filename
-        while MINIO.obj_exist(kb_id, location):
-            location += "_"
-        blob = request.files['file'].read()
-        MINIO.put(kb_id, location, blob)
-        doc = {
-            "id": get_uuid(),
-            "kb_id": kb.id,
-            "parser_id": kb.parser_id,
-            "parser_config": kb.parser_config,
-            "created_by": current_user.id,
-            "type": filetype,
-            "name": filename,
-            "location": location,
-            "size": len(blob),
-            "thumbnail": thumbnail(filename, blob)
-        }
-        if doc["type"] == FileType.VISUAL:
-            doc["parser_id"] = ParserType.PICTURE.value
-        if re.search(r"\.(ppt|pptx|pages)$", filename):
-            doc["parser_id"] = ParserType.PRESENTATION.value
-        doc = DocumentService.insert(doc)
-        return get_json_result(data=doc.to_json())
-    except Exception as e:
-        return server_error_response(e)
+            data=False, retmsg="\n".join(err), retcode=RetCode.SERVER_ERROR)
+    return get_json_result(data=True)
 
 
 @manager.route('/create', methods=['POST'])
@@ -218,26 +225,37 @@ def change_status():
 @validate_request("doc_id")
 def rm():
     req = request.json
-    try:
-        e, doc = DocumentService.get_by_id(req["doc_id"])
-        if not e:
-            return get_data_error_result(retmsg="Document not found!")
-        tenant_id = DocumentService.get_tenant_id(req["doc_id"])
-        if not tenant_id:
-            return get_data_error_result(retmsg="Tenant not found!")
-        ELASTICSEARCH.deleteByQuery(
-            Q("match", doc_id=doc.id), idxnm=search.index_name(tenant_id))
+    doc_ids = req["doc_id"]
+    if isinstance(doc_ids, str): doc_ids = [doc_ids]
+    errors = ""
+    for doc_id in doc_ids:
+        try:
+            e, doc = DocumentService.get_by_id(doc_id)
 
-        DocumentService.increment_chunk_num(
-            doc.id, doc.kb_id, doc.token_num * -1, doc.chunk_num * -1, 0)
-        if not DocumentService.delete(doc):
-            return get_data_error_result(
-                retmsg="Database error (Document removal)!")
+            if not e:
+                return get_data_error_result(retmsg="Document not found!")
+            tenant_id = DocumentService.get_tenant_id(doc_id)
+            if not tenant_id:
+                return get_data_error_result(retmsg="Tenant not found!")
 
-        MINIO.rm(doc.kb_id, doc.location)
-        return get_json_result(data=True)
-    except Exception as e:
-        return server_error_response(e)
+            ELASTICSEARCH.deleteByQuery(
+                Q("match", doc_id=doc.id), idxnm=search.index_name(tenant_id))
+            DocumentService.increment_chunk_num(
+                doc.id, doc.kb_id, doc.token_num * -1, doc.chunk_num * -1, 0)
+            if not DocumentService.delete(doc):
+                return get_data_error_result(
+                    retmsg="Database error (Document removal)!")
+
+            informs = File2DocumentService.get_by_document_id(doc_id)
+            if not informs:
+                MINIO.rm(doc.kb_id, doc.location)
+            else:
+                File2DocumentService.delete_by_document_id(doc_id)
+        except Exception as e:
+            errors += str(e)
+
+    if errors: return server_error_response(e)
+    return get_json_result(data=True)
 
 
 @manager.route('/run', methods=['POST'])
@@ -289,6 +307,11 @@ def rename():
             return get_data_error_result(
                 retmsg="Database error (Document rename)!")
 
+        informs = File2DocumentService.get_by_document_id(req["doc_id"])
+        if informs:
+            e, file = FileService.get_by_id(informs[0].file_id)
+            FileService.update_by_id(file.id, {"name": req["name"]})
+
         return get_json_result(data=True)
     except Exception as e:
         return server_error_response(e)
@@ -302,7 +325,13 @@ def get(doc_id):
         if not e:
             return get_data_error_result(retmsg="Document not found!")
 
-        response = flask.make_response(MINIO.get(doc.kb_id, doc.location))
+        informs = File2DocumentService.get_by_document_id(doc_id)
+        if not informs:
+            response = flask.make_response(MINIO.get(doc.kb_id, doc.location))
+        else:
+            e, file = FileService.get_by_id(informs[0].file_id)
+            response = flask.make_response(MINIO.get(file.parent_id, doc.location))
+
         ext = re.search(r"\.([^.]+)$", doc.name)
         if ext:
             if doc.type == FileType.VISUAL.value:

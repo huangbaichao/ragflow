@@ -55,7 +55,7 @@ This feature and the related APIs are still in development. Contributions are we
 ```
 $ git clone https://github.com/infiniflow/ragflow.git
 $ cd ragflow
-$ docker build -t infiniflow/ragflow:v0.3.2 .
+$ docker build -t infiniflow/ragflow:latest .
 $ cd ragflow/docker
 $ chmod +x ./entrypoint.sh
 $ docker compose up -d
@@ -212,7 +212,7 @@ $ docker ps
 *The system displays the following if all your RAGFlow components are running properly:* 
 
 ```
-5bc45806b680   infiniflow/ragflow:v0.3.2     "./entrypoint.sh"        11 hours ago   Up 11 hours               0.0.0.0:80->80/tcp, :::80->80/tcp, 0.0.0.0:443->443/tcp, :::443->443/tcp, 0.0.0.0:9380->9380/tcp, :::9380->9380/tcp   ragflow-server
+5bc45806b680   infiniflow/ragflow:latest     "./entrypoint.sh"        11 hours ago   Up 11 hours               0.0.0.0:80->80/tcp, :::80->80/tcp, 0.0.0.0:443->443/tcp, :::443->443/tcp, 0.0.0.0:9380->9380/tcp, :::9380->9380/tcp   ragflow-server
 91220e3285dd   docker.elastic.co/elasticsearch/elasticsearch:8.11.3   "/bin/tini -- /usr/l…"   11 hours ago   Up 11 hours (healthy)     9300/tcp, 0.0.0.0:9200->9200/tcp, :::9200->9200/tcp           ragflow-es-01
 d8c86f06c56b   mysql:5.7.18        "docker-entrypoint.s…"   7 days ago     Up 16 seconds (healthy)   0.0.0.0:3306->3306/tcp, :::3306->3306/tcp     ragflow-mysql
 cd29bcb254bc   quay.io/minio/minio:RELEASE.2023-12-20T01-00-02Z       "/usr/bin/docker-ent…"   2 weeks ago    Up 11 hours      0.0.0.0:9001->9001/tcp, :::9001->9001/tcp, 0.0.0.0:9000->9000/tcp, :::9000->9000/tcp     ragflow-minio
@@ -340,10 +340,21 @@ You can use Ollama to deploy local LLM. See [here](https://github.com/infiniflow
 
 ### 6. How to configure RAGFlow to respond with 100% matched results, rather than utilizing LLM?
 
-1. Click the **Knowledge Base** tab in the middle top of the page.
+1. Click **Knowledge Base** in the middle top of the page.
 2. Right click the desired knowledge base to display the **Configuration** dialogue. 
 3. Choose **Q&A** as the chunk method and click **Save** to confirm your change. 
 
 ### Do I need to connect to Redis?
 
-No, connecting to Redis is not required to use RAGFlow. 
+No, connecting to Redis is not required. 
+
+### `Error: Range of input length should be [1, 30000]`
+
+This error occurs because there are too many chunks matching your search criteria. Try reducing the **TopN** and increasing **Similarity threshold** to fix this issue: 
+
+1. Click **Chat** in the middle top of the page. 
+2. Right click the desired conversation > **Edit** > **Prompt Engine**
+3. Reduce the **TopN** and/or raise **Silimarity threshold**.
+4. Click **OK** to confirm your changes.
+
+![topn](https://github.com/infiniflow/ragflow/assets/93570324/7ec72ab3-0dd2-4cff-af44-e2663b67b2fc)

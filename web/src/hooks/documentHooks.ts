@@ -160,12 +160,12 @@ export const useRemoveDocument = () => {
   const { knowledgeId } = useGetKnowledgeSearchParams();
 
   const removeDocument = useCallback(
-    (documentId: string) => {
+    (documentIds: string[]) => {
       try {
         return dispatch<any>({
           type: 'kFModel/document_rm',
           payload: {
-            doc_id: documentId,
+            doc_id: documentIds,
             kb_id: knowledgeId,
           },
         });
@@ -184,12 +184,12 @@ export const useUploadDocument = () => {
   const { knowledgeId } = useGetKnowledgeSearchParams();
 
   const uploadDocument = useCallback(
-    (file: UploadFile) => {
+    (fileList: UploadFile[]) => {
       try {
         return dispatch<any>({
           type: 'kFModel/upload_document',
           payload: {
-            file,
+            fileList,
             kb_id: knowledgeId,
           },
         });

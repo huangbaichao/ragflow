@@ -2,7 +2,6 @@
 import os
 import random
 
-import fitz
 import xgboost as xgb
 from io import BytesIO
 import torch
@@ -16,14 +15,14 @@ from PyPDF2 import PdfReader as pdf2_read
 
 from api.utils.file_utils import get_project_base_directory
 from deepdoc.vision import OCR, Recognizer, LayoutRecognizer, TableStructureRecognizer
-from rag.nlp import huqie
+from rag.nlp import rag_tokenizer
 from copy import deepcopy
 from huggingface_hub import snapshot_download
 
 logging.getLogger("pdfminer").setLevel(logging.WARNING)
 
 
-class HuParser:
+class RAGFlowPdfParser:
     def __init__(self):
         self.ocr = OCR()
         if hasattr(self, "model_speciess"):
@@ -95,13 +94,13 @@ class HuParser:
         h = max(self.__height(up), self.__height(down))
         y_dis = self._y_dis(up, down)
         LEN = 6
-        tks_down = huqie.qie(down["text"][:LEN]).split(" ")
-        tks_up = huqie.qie(up["text"][-LEN:]).split(" ")
+        tks_down = rag_tokenizer.tokenize(down["text"][:LEN]).split(" ")
+        tks_up = rag_tokenizer.tokenize(up["text"][-LEN:]).split(" ")
         tks_all = up["text"][-LEN:].strip() \
                   + (" " if re.match(r"[a-zA-Z0-9]+",
                                      up["text"][-1] + down["text"][0]) else "") \
                   + down["text"][:LEN].strip()
-        tks_all = huqie.qie(tks_all).split(" ")
+        tks_all = rag_tokenizer.tokenize(tks_all).split(" ")
         fea = [
             up.get("R", -1) == down.get("R", -1),
             y_dis / h,
@@ -142,8 +141,8 @@ class HuParser:
             tks_down[-1] == tks_up[-1],
             max(down["in_row"], up["in_row"]),
             abs(down["in_row"] - up["in_row"]),
-            len(tks_down) == 1 and huqie.tag(tks_down[0]).find("n") >= 0,
-            len(tks_up) == 1 and huqie.tag(tks_up[0]).find("n") >= 0
+            len(tks_down) == 1 and rag_tokenizer.tag(tks_down[0]).find("n") >= 0,
+            len(tks_up) == 1 and rag_tokenizer.tag(tks_up[0]).find("n") >= 0
         ]
         return fea
 
@@ -470,7 +469,8 @@ class HuParser:
                         continue
 
                     if re.match(r"[0-9]{2,3}/[0-9]{3}$", up["text"]) \
-                            or re.match(r"[0-9]{2,3}/[0-9]{3}$", down["text"]):
+                            or re.match(r"[0-9]{2,3}/[0-9]{3}$", down["text"]) \
+                            or not down["text"].strip():
                         i += 1
                         continue
 
@@ -598,7 +598,7 @@ class HuParser:
 
             if b["text"].strip()[0] != b_["text"].strip()[0] \
                     or b["text"].strip()[0].lower() in set("qwertyuopasdfghjklzxcvbnm") \
-                    or huqie.is_chinese(b["text"].strip()[0]) \
+                    or rag_tokenizer.is_chinese(b["text"].strip()[0]) \
                     or b["top"] > b_["bottom"]:
                 i += 1
                 continue
@@ -921,9 +921,7 @@ class HuParser:
                 fnm) if not binary else pdfplumber.open(BytesIO(binary))
             return len(pdf.pages)
         except Exception as e:
-            pdf = fitz.open(fnm) if not binary else fitz.open(
-                stream=fnm, filetype="pdf")
-            return len(pdf)
+            logging.error(str(e))
 
     def __images__(self, fnm, zoomin=3, page_from=0,
                    page_to=299, callback=None):
@@ -945,23 +943,7 @@ class HuParser:
                                self.pdf.pages[page_from:page_to]]
             self.total_page = len(self.pdf.pages)
         except Exception as e:
-            self.pdf = fitz.open(fnm) if isinstance(
-                fnm, str) else fitz.open(
-                stream=fnm, filetype="pdf")
-            self.page_images = []
-            self.page_chars = []
-            mat = fitz.Matrix(zoomin, zoomin)
-            self.total_page = len(self.pdf)
-            for i, page in enumerate(self.pdf):
-                if i < page_from:
-                    continue
-                if i >= page_to:
-                    break
-                pix = page.get_pixmap(matrix=mat)
-                img = Image.frombytes("RGB", [pix.width, pix.height],
-                                      pix.samples)
-                self.page_images.append(img)
-                self.page_chars.append([])
+            logging.error(str(e))
 
         self.outlines = []
         try:
